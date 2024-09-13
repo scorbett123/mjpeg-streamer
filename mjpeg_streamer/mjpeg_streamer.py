@@ -28,17 +28,19 @@ class Stream:
         self._lock = asyncio.Lock()
         self._byte_frame_window = deque(maxlen=30)
         self._bandwidth_last_modified_time = time.time()
+        self._current_picture = 0
 
     def set_frame(self, frame: np.ndarray) -> None:
         self._frame = frame
+        self._current_picture += 1
+
+    def get_current_frame_id(self) -> int:
+        return self._current_picture
 
     def get_bandwidth(self) -> float:
-        if (
-            len(self._byte_frame_window) > 0
-            and time.time() - self._bandwidth_last_modified_time >= 1
-        ):
-            deque.clear(self._byte_frame_window)
-        return sum(self._byte_frame_window)
+        amount = sum([i[0] for i in self._byte_frame_window if time.time() - i[1] < 1])
+        self._byte_frame_window = [i for i in self._byte_frame_window if time.time() - i[1] < 1]
+        return amount
 
     def __process_current_frame(self) -> np.ndarray:
         frame = cv2.resize(
@@ -49,8 +51,8 @@ class Stream:
         )
         if not val:
             raise ValueError("Error encoding frame")
-        self._byte_frame_window.append(len(frame.tobytes()))
-        self._bandwidth_last_modified_time = time.time()
+        
+        self._byte_frame_window.append((len(frame.tobytes()), time.time()))
         return frame
 
     async def get_frame(self) -> np.ndarray:
@@ -75,9 +77,11 @@ class _StreamHandler:
             },
         )
         await response.prepare(request)
-
+        current_id = -1
         while True:
             await asyncio.sleep(1 / self._stream.fps)
+            if current_id == self._stream.get_current_frame_id():  # no frame has been written
+                continue
             frame = await self._stream.get_frame_processed()
             with MultipartWriter("image/jpeg", boundary="image-boundary") as mpwriter:
                 mpwriter.append(frame.tobytes(), {"Content-Type": "image/jpeg"})
